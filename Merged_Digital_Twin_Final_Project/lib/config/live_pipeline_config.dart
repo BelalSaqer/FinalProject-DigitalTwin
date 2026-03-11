@@ -20,7 +20,7 @@ class LivePipelineConfig {
 
   static const String backendUrl = String.fromEnvironment(
     'BACKEND_URL',
-    defaultValue: 'http://10.0.2.2:8000/predict',
+    defaultValue: 'http://192.168.1.4:8000/predict',
   );
 
   static const int bufferSize = 30;
