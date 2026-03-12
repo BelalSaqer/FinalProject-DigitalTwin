@@ -34,9 +34,6 @@ class AppState extends ChangeNotifier {
   int _totalPackets = 0;
   int get totalPackets => _totalPackets;
 
-  int _currentCycle = 0;
-  int get currentCycle => _currentCycle;
-
   double _temp = 0;
   double get temp => _temp;
 
@@ -78,7 +75,7 @@ class AppState extends ChangeNotifier {
         type: machine.type,
         status: liveMachineStatus,
         efficiency: liveHealthScore,
-        location: hasLiveData ? 'Cycle $_currentCycle • MQTT Stream' : machine.location,
+        location: hasLiveData ? 'Cycle $currentCycle • MQTT Stream' : machine.location,
       );
     }).toList(growable: false);
   }
@@ -96,31 +93,16 @@ class AppState extends ChangeNotifier {
   bool get hasLiveData => _telemetryHistory.isNotEmpty;
 
   int get liveHealthScore {
-    if (_engineRul <= 0) {
-      return 0;
-    }
-
+    if (_engineRul <= 0) return 0;
     final score = (_engineRul / LivePipelineConfig.maxRul) * 100;
     return score.clamp(0, 100).round();
   }
 
   MachineStatus get liveMachineStatus {
-    if (!_mqttConnected) {
-      return MachineStatus.offline;
-    }
-
-    if (!hasLiveData) {
-      return MachineStatus.maintenance;
-    }
-
-    if (_engineRul > 0 && _engineRul <= LivePipelineConfig.warningRulThreshold) {
-      return MachineStatus.warning;
-    }
-
-    if (_temp >= LivePipelineConfig.warningTempThreshold) {
-      return MachineStatus.warning;
-    }
-
+    if (!_mqttConnected) return MachineStatus.offline;
+    if (!hasLiveData) return MachineStatus.maintenance;
+    if (_engineRul > 0 && _engineRul <= LivePipelineConfig.warningRulThreshold) return MachineStatus.warning;
+    if (_temp >= LivePipelineConfig.warningTempThreshold) return MachineStatus.warning;
     return MachineStatus.online;
   }
 
@@ -129,6 +111,8 @@ class AppState extends ChangeNotifier {
   String get mqttTopic => LivePipelineConfig.mqttTopic;
   String get mqttBroker => LivePipelineConfig.mqttBroker;
   String get backendUrl => LivePipelineConfig.backendUrl;
+
+  int get currentCycle => _telemetryHistory.isNotEmpty ? _telemetryHistory.last.cycle : 0;
 
   void login() {
     _isLoggedIn = true;
@@ -164,9 +148,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> startLivePipeline() async {
-    if (_mqttClient != null) {
-      return;
-    }
+    if (_mqttClient != null) return;
     await _connectMqtt();
   }
 
@@ -187,7 +169,6 @@ class AppState extends ChangeNotifier {
 
     try {
       await mqttClient.connect();
-
       if (mqttClient.connectionStatus?.state != MqttConnectionState.connected) {
         _mqttConnected = false;
         _lastError = 'Unable to connect to MQTT broker.';
@@ -196,15 +177,12 @@ class AppState extends ChangeNotifier {
         _safeNotify();
         return;
       }
-
       _lastError = null;
       _safeNotify();
     } catch (e) {
       _mqttConnected = false;
       _lastError = 'MQTT connection error: $e';
-      try {
-        mqttClient.disconnect();
-      } catch (_) {}
+      try { mqttClient.disconnect(); } catch (_) {}
       _mqttClient = null;
       _safeNotify();
     }
@@ -220,7 +198,6 @@ class AppState extends ChangeNotifier {
       _mqttSubscription?.cancel();
       _mqttSubscription = client.updates?.listen(_handleBrokerUpdate);
     }
-
     _safeNotify();
   }
 
@@ -230,10 +207,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _handleBrokerUpdate(dynamic events) {
-    if (events == null || events.isEmpty) {
-      return;
-    }
-
+    if (events == null || events.isEmpty) return;
     try {
       final MqttPublishMessage recMess = events[0].payload as MqttPublishMessage;
       final String payload = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
@@ -247,24 +221,19 @@ class AppState extends ChangeNotifier {
   void _handlePayload(String payload) {
     try {
       final Map<String, dynamic> data = jsonDecode(payload) as Map<String, dynamic>;
-      final sample = TelemetrySample.fromPayload(data);
+      final sample = TelemetrySample.fromPayload(data); // ✅ engineId موجود
 
       _totalPackets += 1;
-      _currentCycle = sample.cycle;
       _temp = sample.temp;
       _pressure = sample.pressure;
       _speed = sample.speed;
       _lastMessageAt = sample.receivedAt;
       _lastError = null;
 
-      if (_telemetryHistory.length >= LivePipelineConfig.chartHistorySize) {
-        _telemetryHistory.removeAt(0);
-      }
+      if (_telemetryHistory.length >= LivePipelineConfig.chartHistorySize) _telemetryHistory.removeAt(0);
       _telemetryHistory.add(sample);
 
-      if (_timeSeriesBuffer.length >= LivePipelineConfig.bufferSize) {
-        _timeSeriesBuffer.removeAt(0);
-      }
+      if (_timeSeriesBuffer.length >= LivePipelineConfig.bufferSize) _timeSeriesBuffer.removeAt(0);
       _timeSeriesBuffer.add(sample.toFeatureVector());
 
       _safeNotify();
@@ -279,43 +248,44 @@ class AppState extends ChangeNotifier {
   }
 
   List<List<double>> _cloneWindow() {
-    return _timeSeriesBuffer
-        .map((row) => List<double>.from(row))
-        .toList(growable: false);
+    return _timeSeriesBuffer.map((row) => List<double>.from(row)).toList(growable: false);
   }
 
-  Future<void> _sendToBackend(List<List<double>> seriesData) async {
-    if (_backendBusy) {
-      return;
-    }
+ Future<void> _sendToBackend(List<List<double>> seriesData) async {
+  if (_backendBusy) return;
+  _backendBusy = true;
+  _safeNotify();
 
-    _backendBusy = true;
+  print("📡 Sending request to: ${LivePipelineConfig.backendUrl}");
+  print("📊 Data Sample (First Row): ${seriesData.first}");
+
+  try {
+    final response = await http.post(
+      Uri.parse(LivePipelineConfig.backendUrl),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'series_data': seriesData}),
+    ).timeout(const Duration(seconds: 8));
+
+    print("📥 Status Code: ${response.statusCode}");
+    print("📥 Response Body: ${response.body}");
+
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> result = jsonDecode(response.body);
+      _engineRul = _asResponseDouble(result['prediction']);
+      print("✅ RUL Updated: $_engineRul");
+      _lastPredictionAt = DateTime.now();
+      _lastError = null;
+    } else {
+      _lastError = 'Backend error ${response.statusCode}';
+    }
+  } catch (e) {
+    print("❌ HTTP Error: $e");
+    _lastError = 'Backend request failed: $e';
+  } finally {
+    _backendBusy = false;
     _safeNotify();
-
-    try {
-      final response = await http
-          .post(
-            Uri.parse(LivePipelineConfig.backendUrl),
-            headers: const <String, String>{'Content-Type': 'application/json'},
-            body: jsonEncode(<String, dynamic>{'series_data': seriesData}),
-          )
-          .timeout(const Duration(seconds: 8));
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> result = jsonDecode(response.body) as Map<String, dynamic>;
-        _engineRul = _asResponseDouble(result['prediction']);
-        _lastPredictionAt = DateTime.now();
-        _lastError = null;
-      } else {
-        _lastError = 'Backend error ${response.statusCode}: ${response.body}';
-      }
-    } catch (e) {
-      _lastError = 'Backend request failed: $e';
-    } finally {
-      _backendBusy = false;
-      _safeNotify();
-    }
   }
+}
 
   void _disconnectMqtt() {
     _mqttSubscription?.cancel();
@@ -324,17 +294,13 @@ class AppState extends ChangeNotifier {
     final client = _mqttClient;
     _mqttClient = null;
 
-    try {
-      client?.disconnect();
-    } catch (_) {}
-
+    try { client?.disconnect(); } catch (_) {}
     _mqttConnected = false;
   }
 
   void _resetLiveState() {
     _backendBusy = false;
     _totalPackets = 0;
-    _currentCycle = 0;
     _temp = 0;
     _pressure = 0;
     _speed = 0;
@@ -347,9 +313,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _safeNotify() {
-    if (!_disposed) {
-      notifyListeners();
-    }
+    if (!_disposed) notifyListeners();
   }
 
   @override
@@ -361,8 +325,6 @@ class AppState extends ChangeNotifier {
 }
 
 double _asResponseDouble(dynamic value) {
-  if (value is num) {
-    return value.toDouble();
-  }
+  if (value is num) return value.toDouble();
   return double.tryParse('$value') ?? 0.0;
 }
